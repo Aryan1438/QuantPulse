@@ -1,0 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --color-bg: #05070c;
+  --color-surface: #0b0f16;
+  --color-elevated: #10151d;
+  --color-elevated-2: #141a24;
+  --color-border: #1d2532;
+  --color-border-soft: #161c26;
+  --color-muted: #64748b;
+  --color-text: #e6eaf0;
+  --color-text-dim: #94a3b8;
+
+  --color-accent: #22d3a5;
+  --color-accent-dim: #0d9488;
+  --color-bullish: #34d399;
+  --color-bearish: #fb7185;
+  --color-consolidation: #fbbf24;
+  --color-volatility: #a78bfa;
+  --color-info: #38bdf8;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--color-bg);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
+
+.mono { font-family: var(--font-mono); }
+
+.bg-noise-lines {
+  background-image: radial-gradient(circle at 20% 30%, rgba(34,211,165,0.05), transparent 45%);
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  html, body {
+    background: #06080d !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .report-section, .report-cover {
+    break-inside: avoid;
+  }
+  @page {
+    margin: 14mm 10mm;
+  }
+}
