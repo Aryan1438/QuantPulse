@@ -11,6 +11,7 @@ import { WinLossPieChart } from '../components/charts/WinLossPieChart';
 import { CumulativePnlChart } from '../components/charts/CumulativePnlChart';
 import { SessionAnalysisChart } from '../components/charts/SessionAnalysisChart';
 import { runBacktest, BacktestError } from '../lib/backtestEngine';
+import { validateDatasetQuality } from '../lib/mtf';
 import type { Page } from '../App';
 
 function StatCell({ label, value, tone }: { label: string; value: string; tone?: 'bullish' | 'bearish' }) {
@@ -26,7 +27,7 @@ function StatCell({ label, value, tone }: { label: string; value: string; tone?:
 
 export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
   const {
-    datasets, selectedDataset, selectDataset,
+    datasets, selectedDataset, selectedContextDataset, selectDataset, selectContextDataset,
     strategies, selectedStrategy, selectStrategy,
     backtestResult, isRunningBacktest,
     runBacktestStart, runBacktestDone, runBacktestError,
@@ -34,17 +35,22 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
 
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'overview' | 'distribution' | 'timing' | 'trades'>('overview');
-  const missingConfig = !selectedDataset || !selectedStrategy;
+  const missingConfig = !selectedDataset || !selectedContextDataset || !selectedStrategy;
+  const selectedQuality = selectedDataset ? validateDatasetQuality(selectedDataset, selectedDataset.timeframe ?? 'D1') : null;
+  const contextQuality = selectedContextDataset ? validateDatasetQuality(selectedContextDataset, selectedContextDataset.timeframe ?? 'H1') : null;
 
   const handleRun = () => {
-    if (!selectedDataset || !selectedStrategy) return;
+    if (!selectedDataset || !selectedContextDataset || !selectedStrategy) return;
+    if (selectedQuality?.status === 'INVALID' || contextQuality?.status === 'INVALID') {
+      const issues = [...(selectedQuality?.issues ?? []), ...(contextQuality?.issues ?? [])];
+      setError(`DATA QUALITY INVALID: ${issues.join('; ') || 'Dataset contains invalid data.'}`);
+      return;
+    }
     setError(null);
     runBacktestStart();
-    // Simulated async so the UI can show a running state, matching the
-    // "Run Backtest" affordance in the reference design.
     setTimeout(() => {
       try {
-        const result = runBacktest(selectedDataset, selectedStrategy);
+        const result = runBacktest(selectedDataset, selectedStrategy, selectedContextDataset);
         runBacktestDone(result);
       } catch (e) {
         runBacktestError();
@@ -72,7 +78,7 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-consolidation/30 bg-consolidation/10 p-4">
           <div>
             <div className="text-sm font-semibold text-consolidation">⚠ Missing Configuration</div>
-            <div className="text-xs text-text-dim">Please select a Dataset and a Strategy.</div>
+            <div className="text-xs text-text-dim">Please select execution data, context data, and a strategy.</div>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => onNavigate('data')}>Go to Data</Button>
@@ -89,7 +95,7 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
         <div className="space-y-4">
           {!backtestResult ? (
             <Card className="flex h-[420px] items-center justify-center text-sm text-muted">
-              {selectedDataset ? 'Configure a strategy, then run the backtest to view charts.' : 'Select a dataset to view charts.'}
+              {selectedDataset && selectedContextDataset ? 'Configure a strategy, then run the multi-timeframe backtest to view charts.' : 'Select execution and context datasets to view charts.'}
             </Card>
           ) : (
             <>
@@ -165,11 +171,11 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
                         <tr className="border-b border-border">
                           <th className="py-2 pr-3 font-medium">#</th>
                           <th className="py-2 pr-3 font-medium">Side</th>
-                          <th className="py-2 pr-3 font-medium">Entry</th>
+                          <th className="py-2 pr-3 font-medium">Signal / Entry</th>
                           <th className="py-2 pr-3 font-medium">Exit</th>
                           <th className="py-2 pr-3 font-medium">R</th>
                           <th className="py-2 pr-3 font-medium">PnL</th>
-                          <th className="py-2 pr-3 font-medium">Regime</th>
+                          <th className="py-2 pr-3 font-medium">Timeframes</th>
                           <th className="py-2 pr-3 font-medium">Result</th>
                         </tr>
                       </thead>
@@ -180,13 +186,13 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
                             <td className="py-2 pr-3">
                               <Badge tone={t.side === 'long' ? 'bullish' : 'bearish'}>{t.side}</Badge>
                             </td>
-                            <td className="mono py-2 pr-3 text-text-dim">{t.entryPrice.toFixed(2)}</td>
-                            <td className="mono py-2 pr-3 text-text-dim">{t.exitPrice.toFixed(2)}</td>
+                            <td className="py-2 pr-3 text-text-dim"><div className="mono">{t.entryPrice.toFixed(2)}</div><div className="text-[10px] text-muted">{new Date((t.signalTimestamp ?? t.entryTime) * 1000).toISOString()} UTC</div></td>
+                            <td className="py-2 pr-3 text-text-dim"><div className="mono">{t.exitPrice.toFixed(2)}</div><div className="text-[10px] text-muted">{new Date(t.exitTime * 1000).toISOString()} UTC</div></td>
                             <td className="mono py-2 pr-3 text-text-dim">{t.rMultiple.toFixed(2)}R</td>
                             <td className={`mono py-2 pr-3 font-medium ${t.pnl >= 0 ? 'text-bullish' : 'text-bearish'}`}>
                               {t.pnl >= 0 ? '+' : ''}{t.pnl.toFixed(0)}
                             </td>
-                            <td className="py-2 pr-3 text-text-dim">{t.regime ?? '—'}</td>
+                            <td className="py-2 pr-3 text-text-dim">{t.entryTimeframe ?? '—'} / {t.executionTimeframe ?? '—'}</td>
                             <td className="py-2 pr-3">
                               <Badge tone={t.result === 'win' ? 'bullish' : t.result === 'loss' ? 'bearish' : 'muted'}>{t.result}</Badge>
                             </td>
@@ -211,7 +217,7 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
             <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-text">⌁ Configuration</h3>
 
             <div className="mb-4">
-              <div className="mb-1 text-xs text-muted">Selected Asset</div>
+              <div className="mb-1 text-xs text-muted">Execution / Lower Timeframe</div>
               <select
                 value={selectedDataset?.id ?? ''}
                 onChange={(e) => selectDataset(e.target.value || null)}
@@ -219,6 +225,20 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
               >
                 <option value="">None selected</option>
                 {datasets.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="mb-4">
+              <div className="mb-1 text-xs text-muted">Context / Higher Timeframe</div>
+              <select
+                value={selectedContextDataset?.id ?? ''}
+                onChange={(e) => selectContextDataset(e.target.value || null)}
+                className="w-full rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-text focus:border-accent/40 focus:outline-none"
+              >
+                <option value="">None selected</option>
+                {datasets.filter((d) => d.id !== selectedDataset?.id).map((d) => (
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
               </select>
@@ -237,6 +257,18 @@ export function Backtest({ onNavigate }: { onNavigate: (p: Page) => void }) {
                 ))}
               </select>
             </div>
+
+            {selectedDataset && selectedContextDataset && selectedQuality && contextQuality && (
+              <div className="mt-4 rounded-lg border border-border bg-elevated p-3 text-xs text-text-dim">
+                <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">ONE MULTI-TIMEFRAME BACKTEST</div>
+                <div>Symbol: {selectedDataset.symbol}</div>
+                <div>Context: {selectedContextDataset.timeframe ?? '—'} · {contextQuality.rows} rows</div>
+                <div>Execution: {selectedDataset.timeframe ?? '—'} · {selectedQuality.rows} rows</div>
+                <div>Evaluation resolution: {selectedDataset.timeframe ?? '—'}</div>
+                <div>Timezone: UTC</div>
+                <div className="mt-2 font-semibold text-text">Status: {selectedQuality.status} / {contextQuality.status}</div>
+              </div>
+            )}
           </Card>
 
           {backtestResult && (

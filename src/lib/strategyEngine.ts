@@ -12,6 +12,8 @@
 // here for signal + exit-distance evaluation.
 
 import { atr, bollingerBands, ema, macd, rsi, sma, vwap } from './indicators';
+import { getHistoricalCandles } from './mtf';
+import { TIMEFRAME_SECONDS } from './types';
 import type {
   BuilderStrategyConfig,
   Candle,
@@ -21,6 +23,8 @@ import type {
   Operand,
   RuleCondition,
   TradeDirection,
+  Dataset,
+  Timeframe,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -31,7 +35,7 @@ export type SeriesMap = Map<string, number[]>;
 
 function indicatorKey(ref: IndicatorRef): string {
   const period = ref.kind.startsWith('MACD') ? 'std' : ref.kind.startsWith('BB') ? ref.period : ref.period;
-  return `${ref.kind}(${period})`;
+  return ref.timeframe ? `${ref.kind}(${period})@${ref.timeframe}` : `${ref.kind}(${period})`;
 }
 
 function collectIndicatorRefs(group: ConditionGroup, refs: Map<string, IndicatorRef>) {
@@ -183,6 +187,127 @@ export function computeEntrySignal(
   const shortOk = (dir === 'short' || dir === 'both') && evalGroup(config.entryShort, candles, i, series);
   if (shortOk) return 'short';
   return null;
+}
+
+function collectTimeframes(group: ConditionGroup, set: Set<Timeframe>) {
+  for (const condition of group.conditions) {
+    for (const operand of [condition.left, condition.right]) {
+      if (operand.timeframe) set.add(operand.timeframe);
+      if (operand.indicator?.timeframe) set.add(operand.indicator.timeframe);
+    }
+  }
+}
+
+export function hasMtfConditions(config: BuilderStrategyConfig): boolean {
+  const timeframes = new Set<Timeframe>();
+  collectTimeframes(config.entryLong, timeframes);
+  collectTimeframes(config.entryShort, timeframes);
+  return timeframes.size > 0;
+}
+
+function projectSeries(source: Candle[], values: number[], executionCandles: Candle[], timeframe: Timeframe, executionTimeframe?: Timeframe): number[] {
+  const out = new Array(executionCandles.length).fill(NaN);
+  let sourceIndex = -1;
+  for (let i = 0; i < executionCandles.length; i++) {
+    const available = getHistoricalCandles(
+      { id: '', name: '', symbol: '', assetType: '', candles: source, builderTimeframe: timeframe, regimes: [], createdAt: 0 },
+      timeframe,
+      executionCandles[i].time + TIMEFRAME_SECONDS[executionTimeframe ?? 'M1'],
+    );
+    sourceIndex = available.length - 1;
+    if (sourceIndex >= 0) out[i] = values[sourceIndex];
+  }
+  return out;
+}
+
+function projectedCandleValues(source: Candle[], executionCandles: Candle[], timeframe: Timeframe, executionTimeframe?: Timeframe): Map<string, number[]> {
+  const fields = new Map<string, number[]>();
+  for (const field of ['open', 'high', 'low', 'close', 'volume'] as const) {
+    fields.set(field, projectSeries(source, source.map((candle) => candle[field]), executionCandles, timeframe, executionTimeframe));
+  }
+  return fields;
+}
+
+/** Precomputes timeframe-isolated indicators and projects only completed
+ * values onto the lowest selected execution timeline. */
+export function precomputeMtfBuilderSeries(dataset: Dataset, executionCandles: Candle[], config: BuilderStrategyConfig): SeriesMap {
+  const refs = new Map<string, IndicatorRef>();
+  collectIndicatorRefs(config.entryLong, refs);
+  collectIndicatorRefs(config.entryShort, refs);
+  const timeframes = new Set<Timeframe>();
+  collectTimeframes(config.entryLong, timeframes);
+  collectTimeframes(config.entryShort, timeframes);
+  for (const ref of refs.values()) if (ref.timeframe) timeframes.add(ref.timeframe);
+  timeframes.add(config.executionTimeframe ?? dataset.builderTimeframe ?? 'H1');
+
+  const map: SeriesMap = new Map();
+  for (const timeframe of timeframes) {
+    const source = dataset.timeframes?.[timeframe];
+    if (!source) continue;
+    const timeframeRefs = [...refs.values()].filter((ref) => (ref.timeframe ?? config.executionTimeframe) === timeframe);
+    let macdResult: ReturnType<typeof macd> | null = null;
+    const bbCache = new Map<number, ReturnType<typeof bollingerBands>>();
+    for (const ref of timeframeRefs) {
+      const key = indicatorKey(ref);
+      switch (ref.kind) {
+        case 'SMA': map.set(key, projectSeries(source, sma(source, ref.period), executionCandles, timeframe, config.executionTimeframe)); break;
+        case 'EMA': map.set(key, projectSeries(source, ema(source, ref.period), executionCandles, timeframe, config.executionTimeframe)); break;
+        case 'RSI': map.set(key, projectSeries(source, rsi(source, ref.period), executionCandles, timeframe, config.executionTimeframe)); break;
+        case 'ATR': map.set(key, projectSeries(source, atr(source, ref.period), executionCandles, timeframe, config.executionTimeframe)); break;
+        case 'VWAP': map.set(key, projectSeries(source, vwap(source, ref.period), executionCandles, timeframe, config.executionTimeframe)); break;
+        case 'MACD_LINE':
+        case 'MACD_SIGNAL':
+        case 'MACD_HIST':
+          macdResult ??= macd(source);
+          map.set(key, projectSeries(source, macdResult[ref.kind === 'MACD_LINE' ? 'line' : ref.kind === 'MACD_SIGNAL' ? 'signal' : 'histogram'], executionCandles, timeframe, config.executionTimeframe));
+          break;
+        case 'BB_UPPER':
+        case 'BB_MIDDLE':
+        case 'BB_LOWER':
+          if (!bbCache.has(ref.period)) bbCache.set(ref.period, bollingerBands(source, ref.period));
+          map.set(key, projectSeries(source, bbCache.get(ref.period)![ref.kind === 'BB_UPPER' ? 'upper' : ref.kind === 'BB_MIDDLE' ? 'middle' : 'lower'], executionCandles, timeframe, config.executionTimeframe));
+          break;
+      }
+    }
+    const prices = projectedCandleValues(source, executionCandles, timeframe, config.executionTimeframe);
+    for (const [field, values] of prices) map.set(`PRICE(${field})@${timeframe}`, values);
+  }
+  return map;
+}
+
+export function computeMtfEntrySignal(config: BuilderStrategyConfig, i: number, series: SeriesMap): 'long' | 'short' | null {
+  const evalMtfGroup = (group: ConditionGroup): boolean => {
+    if (!group.conditions.length) return false;
+    const read = (operand: Operand): number => {
+      if (operand.type === 'constant') return operand.value ?? NaN;
+      if (operand.type === 'price') return series.get(`PRICE(${operand.field})@${operand.timeframe ?? config.executionTimeframe}`)?.[i] ?? NaN;
+      return series.get(indicatorKey(operand.indicator!))?.[i] ?? NaN;
+    };
+    const evaluateCondition = (condition: RuleCondition): boolean => {
+      const left = read(condition.left);
+      const right = read(condition.right);
+      if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+      if (condition.operator === 'crosses_above' || condition.operator === 'crosses_below') {
+        if (i < 1) return false;
+        const previousLeft = readAt(condition.left, i - 1, series, config.executionTimeframe);
+        const previousRight = readAt(condition.right, i - 1, series, config.executionTimeframe);
+        return condition.operator === 'crosses_above' ? previousLeft <= previousRight && left > right : previousLeft >= previousRight && left < right;
+      }
+      return compare(condition.operator, left, right);
+    };
+    return group.combinator === 'AND'
+      ? group.conditions.every(evaluateCondition)
+      : group.conditions.some(evaluateCondition);
+  };
+  if ((config.direction === 'long' || config.direction === 'both') && evalMtfGroup(config.entryLong)) return 'long';
+  if ((config.direction === 'short' || config.direction === 'both') && evalMtfGroup(config.entryShort)) return 'short';
+  return null;
+}
+
+function readAt(operand: Operand, index: number, series: SeriesMap, executionTimeframe?: Timeframe): number {
+  if (operand.type === 'constant') return operand.value ?? NaN;
+  if (operand.type === 'price') return series.get(`PRICE(${operand.field})@${operand.timeframe ?? executionTimeframe}`)?.[index] ?? NaN;
+  return series.get(indicatorKey(operand.indicator!))?.[index] ?? NaN;
 }
 
 export function readIndicatorValue(ref: IndicatorRef, _candles: Candle[], i: number, series: SeriesMap): number | null {

@@ -116,4 +116,31 @@ describe('reducer — run history', () => {
     expect(state.runHistory.length).toBe(1);
     expect(state.runHistory[0].datasetName).toBe('Unknown dataset');
   });
+
+  it('runs one existing strategy on one merged lower-plus-higher timeframe market', () => {
+    const execution = makeDataset();
+    execution.id = 'execution-h1';
+    execution.name = 'XAUUSD 1H';
+    execution.symbol = 'XAUUSD';
+    execution.timeframe = 'H1';
+    execution.builderTimeframe = 'H1';
+    execution.timeframes = { H1: execution.candles };
+    const context = {
+      ...execution,
+      id: 'context-h4',
+      name: 'XAUUSD 4H',
+      timeframe: 'H4' as const,
+      builderTimeframe: 'H4' as const,
+      timeframes: { H4: execution.candles.filter((_, index) => index % 4 === 0) },
+      candles: execution.candles.filter((_, index) => index % 4 === 0),
+    };
+    const strategy = makeStrategy();
+    const result = runBacktest(execution, strategy, context);
+
+    expect(result.strategyId).toBe(strategy.id);
+    expect(result.datasetId).toBe(execution.id);
+    expect(result.timeframeConfiguration?.executionTimeframe).toBe('H1');
+    expect(result.timeframeConfiguration?.contextTimeframe).toBe('H4');
+    expect(result.timeframeConfiguration?.selected).toEqual(['H1', 'H4']);
+  });
 });

@@ -8,9 +8,9 @@ import type {
   Regime,
   RunHistoryEntry,
   Strategy,
+  Timeframe,
 } from '../lib/types';
 import { classifyRegimes } from '../lib/regime';
-import { generateXauUsdCandles } from '../lib/sampleData';
 import { MAX_RUN_HISTORY } from '../lib/comparison';
 
 const DEFAULT_STRATEGY_CONFIG: DefaultStrategyConfig = {
@@ -90,6 +90,7 @@ function makeDefaultStrategy(): Strategy {
 export interface AppState {
   datasets: Dataset[];
   selectedDatasetId: string | null;
+  selectedContextDatasetId: string | null;
   strategies: Strategy[];
   selectedStrategyId: string | null;
   draftStrategy: Strategy;
@@ -102,6 +103,7 @@ export interface AppState {
 export type Action =
   | { type: 'ADD_DATASET'; dataset: Dataset }
   | { type: 'SELECT_DATASET'; id: string | null }
+  | { type: 'SELECT_CONTEXT_DATASET'; id: string | null }
   | { type: 'SAVE_STRATEGY'; strategy: Strategy }
   | { type: 'SELECT_STRATEGY'; id: string | null }
   | { type: 'UPDATE_DRAFT'; strategy: Strategy }
@@ -118,6 +120,7 @@ const initialStrategy = makeDefaultStrategy();
 export const initialState: AppState = {
   datasets: [],
   selectedDatasetId: null,
+  selectedContextDatasetId: null,
   strategies: [initialStrategy],
   selectedStrategyId: null,
   draftStrategy: initialStrategy,
@@ -139,6 +142,8 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case 'SELECT_DATASET':
       return { ...state, selectedDatasetId: action.id, backtestResult: null };
+    case 'SELECT_CONTEXT_DATASET':
+      return { ...state, selectedContextDatasetId: action.id, backtestResult: null };
     case 'SAVE_STRATEGY': {
       const exists = state.strategies.some((s) => s.id === action.strategy.id);
       const strategies = exists
@@ -193,8 +198,22 @@ export function reducer(state: AppState, action: Action): AppState {
 }
 
 interface AppContextValue extends AppState {
-  addDatasetFromCandles: (name: string, symbol: string, assetType: string, candles: Dataset['candles']) => void;
+  addDatasetFromCandles: (
+    name: string,
+    symbol: string,
+    assetType: string,
+    candles: Dataset['candles'],
+    options?: {
+      timeframe?: Timeframe;
+      source?: string;
+      startDate?: string;
+      endDate?: string;
+      timezone?: 'UTC';
+      timeframes?: Partial<Record<Timeframe, Dataset['candles']>>;
+    },
+  ) => void;
   selectDataset: (id: string | null) => void;
+  selectContextDataset: (id: string | null) => void;
   saveStrategy: (strategy: Strategy) => void;
   selectStrategy: (id: string | null) => void;
   updateDraft: (strategy: Strategy) => void;
@@ -204,6 +223,7 @@ interface AppContextValue extends AppState {
   runBacktestError: () => void;
   logActivity: (title: string, detail: string) => void;
   selectedDataset: Dataset | null;
+  selectedContextDataset: Dataset | null;
   selectedStrategy: Strategy | null;
   removeRunFromHistory: (id: string) => void;
   clearRunHistory: () => void;
@@ -219,23 +239,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addDatasetFromCandles = useCallback(
-    (name: string, symbol: string, assetType: string, candles: Dataset['candles']) => {
+    (
+      name: string,
+      symbol: string,
+      assetType: string,
+      candles: Dataset['candles'],
+      options: {
+        timeframe?: Timeframe;
+        source?: string;
+        startDate?: string;
+        endDate?: string;
+        timezone?: 'UTC';
+        timeframes?: Partial<Record<Timeframe, Dataset['candles']>>;
+      } = {},
+    ) => {
+      const normalizedCandles = [...candles].sort((a, b) => a.time - b.time);
+      const timeframe = options.timeframe ?? 'D1';
+      const source = options.source ?? 'Uploaded CSV';
+      const startDate = options.startDate ?? (normalizedCandles[0] ? new Date(normalizedCandles[0].time * 1000).toISOString().slice(0, 10) : undefined);
+      const endDate = options.endDate ?? (normalizedCandles[normalizedCandles.length - 1] ? new Date(normalizedCandles[normalizedCandles.length - 1].time * 1000).toISOString().slice(0, 10) : undefined);
       const dataset: Dataset = {
         id: `ds-${Date.now()}`,
         name,
         symbol,
         assetType,
-        candles,
-        regimes: classifyRegimes(candles),
+        candles: normalizedCandles,
+        timeframe,
+        timeframes: options.timeframes ?? { [timeframe]: normalizedCandles },
+        builderTimeframe: timeframe,
+        source,
+        startDate,
+        endDate,
+        timezone: options.timezone ?? 'UTC',
+        regimes: classifyRegimes(normalizedCandles),
         createdAt: Date.now(),
       };
       dispatch({ type: 'ADD_DATASET', dataset });
-      logActivity('Dataset loaded', `${name} · ${candles.length} candles`);
+      logActivity('Dataset loaded', `${name} · ${normalizedCandles.length} candles`);
     },
     [logActivity],
   );
 
   const selectDataset = useCallback((id: string | null) => dispatch({ type: 'SELECT_DATASET', id }), []);
+  const selectContextDataset = useCallback((id: string | null) => dispatch({ type: 'SELECT_CONTEXT_DATASET', id }), []);
 
   const saveStrategy = useCallback(
     (strategy: Strategy) => {
@@ -271,11 +317,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => state.strategies.find((s) => s.id === state.selectedStrategyId) ?? null,
     [state.strategies, state.selectedStrategyId],
   );
+  const selectedContextDataset = useMemo(
+    () => state.datasets.find((d) => d.id === state.selectedContextDatasetId) ?? null,
+    [state.datasets, state.selectedContextDatasetId],
+  );
 
   const value: AppContextValue = {
     ...state,
     addDatasetFromCandles,
     selectDataset,
+    selectContextDataset,
     saveStrategy,
     selectStrategy,
     updateDraft,
@@ -285,6 +336,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     runBacktestError,
     logActivity,
     selectedDataset,
+    selectedContextDataset,
     selectedStrategy,
     removeRunFromHistory,
     clearRunHistory,
@@ -297,15 +349,6 @@ export function useApp(): AppContextValue {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error('useApp must be used within AppProvider');
   return ctx;
-}
-
-export function generateSampleDataset(): Pick<Dataset, 'candles'> & { name: string; symbol: string; assetType: string } {
-  return {
-    name: 'Sample XAUUSD',
-    symbol: 'XAUUSD',
-    assetType: 'Commodity',
-    candles: generateXauUsdCandles(),
-  };
 }
 
 export const ALL_REGIMES: Regime[] = ['bullish', 'bearish', 'consolidation', 'high_volatility'];

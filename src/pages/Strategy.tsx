@@ -15,6 +15,7 @@ import type {
   StrategyMode,
   TakeProfitMode,
   TradeDirection,
+  Timeframe,
 } from '../lib/types';
 
 const REGIME_TONE: Record<Regime, 'bullish' | 'bearish' | 'consolidation' | 'volatility'> = {
@@ -105,6 +106,8 @@ export function Strategy() {
     updateDraft({ ...draftStrategy, builder: { ...draftStrategy.builder, direction } });
   const setInitialCapital = (initialCapital: number) =>
     updateDraft({ ...draftStrategy, builder: { ...draftStrategy.builder, initialCapital } });
+  const setExecutionTimeframe = (executionTimeframe: Timeframe | undefined) =>
+    updateDraft({ ...draftStrategy, builder: { ...draftStrategy.builder, executionTimeframe } });
   const setEntryLong = (entryLong: StrategyT['builder']['entryLong']) =>
     updateDraft({ ...draftStrategy, builder: { ...draftStrategy.builder, entryLong } });
   const setEntryShort = (entryShort: StrategyT['builder']['entryShort']) =>
@@ -254,6 +257,15 @@ export function Strategy() {
                   onChange={(e) => setInitialCapital(parseFloat(e.target.value) || 0)}
                   className="w-full rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-text focus:border-accent/40 focus:outline-none"
                 />
+                <label className="mb-1 mt-4 block text-xs text-muted">Execution Timeframe</label>
+                <select
+                  value={draftStrategy.builder.executionTimeframe ?? ''}
+                  onChange={(e) => setExecutionTimeframe((e.target.value || undefined) as Timeframe | undefined)}
+                  className="w-full rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-text focus:border-accent/40 focus:outline-none"
+                >
+                  <option value="">Dataset default</option>
+                  {['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'].map((timeframe) => <option key={timeframe} value={timeframe}>{timeframe}</option>)}
+                </select>
               </Card>
 
               <Card>

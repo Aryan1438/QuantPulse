@@ -67,10 +67,6 @@ export function generateSampleCandles(count = 500, startPrice = 42000): Candle[]
   return candles;
 }
 
-export function generateXauUsdCandles(count = 2000): Candle[] {
-  return generateSampleCandles(count, 2325);
-}
-
 export function candlesToCsv(candles: Candle[]): string {
   const rows = candles.map((candle) => [
     new Date(candle.time * 1000).toISOString(),

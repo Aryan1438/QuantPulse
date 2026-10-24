@@ -9,6 +9,31 @@ export interface Candle {
   volume: number;
 }
 
+export type Timeframe = 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1';
+
+export const TIMEFRAMES: Timeframe[] = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
+
+export const TIMEFRAME_SECONDS: Record<Timeframe, number> = {
+  M1: 60,
+  M5: 300,
+  M15: 900,
+  M30: 1800,
+  H1: 3600,
+  H4: 14400,
+  D1: 86400,
+};
+
+export type TimeframeCandles = Partial<Record<Timeframe, Candle[]>>;
+export type ExecutionPolicy = 'conservative' | 'optimistic' | 'next_bar' | 'close_based';
+
+export interface ExecutionSettings {
+  policy: ExecutionPolicy;
+  spreadPct: number;
+  slippagePct: number;
+  commissionPct: number;
+  intrabarAssumption: string;
+}
+
 export type Regime = 'bullish' | 'bearish' | 'consolidation' | 'high_volatility';
 
 export interface RegimeLabel {
@@ -22,6 +47,14 @@ export interface Dataset {
   symbol: string;
   assetType: string;
   candles: Candle[];
+  timeframe?: Timeframe;
+  /** Optional additional series. `candles` remains the default series. */
+  timeframes?: TimeframeCandles;
+  builderTimeframe?: Timeframe;
+  source?: string;
+  startDate?: string;
+  endDate?: string;
+  timezone?: 'UTC';
   regimes: RegimeLabel[];
   createdAt: number;
 }
@@ -63,6 +96,7 @@ export const PERIODLESS_INDICATORS: IndicatorKind[] = ['MACD_LINE', 'MACD_SIGNAL
 export interface IndicatorRef {
   kind: IndicatorKind;
   period: number; // ignored for MACD_* kinds
+  timeframe?: Timeframe;
 }
 
 export type OperandType = 'indicator' | 'price' | 'constant';
@@ -72,6 +106,7 @@ export interface Operand {
   indicator?: IndicatorRef;
   field?: PriceField;
   value?: number;
+  timeframe?: Timeframe;
 }
 
 export type ConditionOperator = '>' | '<' | '>=' | '<=' | '==' | 'crosses_above' | 'crosses_below';
@@ -113,11 +148,13 @@ export interface BuilderRiskConfig {
   fixedPositionSize: number;
   commissionPct: number;
   slippagePct: number;
+  spreadPct?: number;
 }
 
 export interface BuilderStrategyConfig {
   direction: TradeDirection;
   timeframeLabel: string; // informational — dataset already fixes the actual bar interval
+  executionTimeframe?: Timeframe;
   initialCapital: number;
   entryLong: ConditionGroup;
   entryShort: ConditionGroup;
@@ -153,6 +190,19 @@ export interface Trade {
   result: 'win' | 'loss' | 'breakeven';
   regime: Regime | null;
   exitReason: 'stop_loss' | 'take_profit' | 'end_of_data' | 'opposite_signal' | 'indicator_exit';
+  symbol?: string;
+  signalTimestamp?: number;
+  entryTimestamp?: number;
+  exitTimestamp?: number;
+  riskAmount?: number;
+  rewardAmount?: number;
+  riskReward?: number;
+  entryTimeframe?: Timeframe;
+  executionTimeframe?: Timeframe;
+  strategyConditions?: string[];
+  tradeDuration?: number;
+  mfe?: number;
+  mae?: number;
 }
 
 export interface EquityPoint {
@@ -175,6 +225,18 @@ export interface BacktestResult {
   strategyId: string;
   datasetId: string;
   runAt: number;
+  timeframeConfiguration?: {
+    executionTimeframe: Timeframe;
+    contextTimeframe?: Timeframe;
+    selected: Timeframe[];
+  };
+  executionSettings?: ExecutionSettings;
+  dataInfo?: {
+    symbol: string;
+    timezone: 'UTC';
+    candleCounts: Partial<Record<Timeframe, number>>;
+    datasetNames?: Partial<Record<Timeframe, string>>;
+  };
 }
 
 export interface ActivityEvent {

@@ -12,8 +12,11 @@ import {
 } from './dsl';
 import {
   computeEntrySignal,
+  computeMtfEntrySignal,
   evalGroup,
+  precomputeMtfBuilderSeries,
   precomputeBuilderSeries,
+  hasMtfConditions,
   readIndicatorValue,
   requiredWarmupBars,
   type SeriesMap as BuilderSeriesMap,
@@ -29,6 +32,7 @@ import type {
   Trade,
   TradeSide,
 } from './types';
+import { executionTimeframe, mergeTimeframeDatasets, validateDatasetQuality } from './mtf';
 
 const STARTING_EQUITY = 100_000;
 const BREAKOUT_LOOKBACK = 20;
@@ -44,6 +48,8 @@ interface OpenPosition {
   riskAmount: number;
   regime: Regime | null;
   units?: number; // set for builder-mode positions sized by fixed unit count
+  mfe: number;
+  mae: number;
 }
 
 function rollingHigh(candles: Candle[], i: number, lookback: number): number {
@@ -122,11 +128,29 @@ function builderExitDistances(
   return { slDistance, tpDistance };
 }
 
-export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResult {
-  const candles = dataset.candles;
+export function runBacktest(dataset: Dataset, strategy: Strategy, contextDataset?: Dataset): BacktestResult {
+  const marketDataset = contextDataset ? mergeTimeframeDatasets(dataset, contextDataset) : dataset;
+  const configuredExecutionTimeframe = strategy.mode === 'builder' ? strategy.builder.executionTimeframe : undefined;
+  const executionTf = executionTimeframe(marketDataset, configuredExecutionTimeframe);
+  const quality = validateDatasetQuality(marketDataset, executionTf);
+  const contextTimeframe = contextDataset?.timeframe ?? contextDataset?.builderTimeframe;
+  const contextQuality = contextDataset && contextTimeframe ? validateDatasetQuality(contextDataset, contextTimeframe) : null;
+  if (quality.status === 'INVALID') {
+    throw new BacktestError(`Dataset validation failed for ${marketDataset.symbol} ${executionTf}: ${quality.issues.join('; ') || 'invalid dataset'}`);
+  }
+  if (contextQuality?.status === 'INVALID') {
+    throw new BacktestError(`Context dataset validation failed for ${contextDataset!.symbol} ${contextTimeframe}: ${contextQuality.issues.join('; ') || 'invalid dataset'}`);
+  }
 
   const isBuilder = strategy.mode === 'builder';
   const builderCfg = strategy.builder;
+  const usesMtf = isBuilder && Boolean(marketDataset.timeframes) && (hasMtfConditions(builderCfg) || Boolean(contextDataset));
+  const mtfConfig = usesMtf
+    ? { ...builderCfg, executionTimeframe: builderCfg.executionTimeframe ?? executionTf }
+    : builderCfg;
+  const candles = configuredExecutionTimeframe && marketDataset.timeframes?.[executionTf]
+    ? marketDataset.timeframes[executionTf]!
+    : marketDataset.candles;
   const startingEquity = isBuilder ? builderCfg.initialCapital : STARTING_EQUITY;
   const warmupBars = isBuilder ? Math.max(WARMUP_BARS, requiredWarmupBars(builderCfg)) : WARMUP_BARS;
 
@@ -137,7 +161,7 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
   }
 
   const regimeAt = new Map<number, Regime>();
-  for (const r of dataset.regimes) regimeAt.set(r.time, r.regime);
+  for (const r of marketDataset.regimes) regimeAt.set(r.time, r.regime);
 
   const atr14 = atr(candles, 14);
 
@@ -151,6 +175,10 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
   let builderSeries: BuilderSeriesMap | null = null;
   if (isBuilder) {
     builderSeries = precomputeBuilderSeries(candles, builderCfg);
+    if (usesMtf) {
+      const mtfSeries = precomputeMtfBuilderSeries(marketDataset, candles, mtfConfig);
+      for (const [key, values] of mtfSeries) builderSeries.set(key, values);
+    }
   }
 
   const trades: Trade[] = [];
@@ -168,6 +196,14 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
 
     // ---- Manage open position first ----
     if (position) {
+      const favorableMove = position.side === 'long'
+        ? candle.high - position.entryPrice
+        : position.entryPrice - candle.low;
+      const adverseMove = position.side === 'long'
+        ? candle.low - position.entryPrice
+        : position.entryPrice - candle.high;
+      position.mfe = Math.max(position.mfe, favorableMove);
+      position.mae = Math.min(position.mae, adverseMove);
       let exitPrice: number | null = null;
       let exitReason: Trade['exitReason'] = 'end_of_data';
 
@@ -258,6 +294,19 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
           result: pnl > 0.01 ? 'win' : pnl < -0.01 ? 'loss' : 'breakeven',
           regime: position.regime,
           exitReason,
+          symbol: marketDataset.symbol,
+          signalTimestamp: position.entryTime,
+          entryTimestamp: position.entryTime,
+          exitTimestamp: candle.time,
+          riskAmount: position.riskAmount,
+          rewardAmount: Math.abs(position.takeProfit - position.entryPrice),
+          riskReward: position.distance > 0 ? Math.abs(position.takeProfit - position.entryPrice) / position.distance : 0,
+          entryTimeframe: executionTf,
+          executionTimeframe: executionTf,
+          strategyConditions: isBuilder ? [...builderCfg.entryLong.conditions, ...builderCfg.entryShort.conditions].map((condition) => `${condition.left.type} ${condition.operator} ${condition.right.type}`) : [],
+          tradeDuration: candle.time - position.entryTime,
+          mfe: position.mfe,
+          mae: position.mae,
         });
 
         position = null;
@@ -285,6 +334,8 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
                 distance,
                 riskAmount: equity * (cfg.riskPerTradePct / 100),
                 regime,
+                mfe: 0,
+                mae: 0,
               };
             } else if (candle.close < ll) {
               const entryPrice = candle.close;
@@ -297,6 +348,8 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
                 distance,
                 riskAmount: equity * (cfg.riskPerTradePct / 100),
                 regime,
+                mfe: 0,
+                mae: 0,
               };
             }
           }
@@ -319,11 +372,15 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
               distance,
               riskAmount: equity * (riskPct / 100),
               regime,
+                mfe: 0,
+                mae: 0,
             };
           }
         }
       } else if (isBuilder && builderSeries) {
-        const signal = computeEntrySignal(builderCfg, candles, i, builderSeries);
+        const signal = usesMtf
+          ? computeMtfEntrySignal(mtfConfig, i, builderSeries)
+          : computeEntrySignal(builderCfg, candles, i, builderSeries);
         if (signal) {
           const rawEntryPrice = candle.close;
           // Slippage makes entries slightly worse than the quoted price.
@@ -347,6 +404,8 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
               riskAmount: equity * (builderCfg.risk.riskPerTradePct / 100),
               regime,
               units: builderCfg.risk.positionSizingMode === 'fixed_size' ? units : undefined,
+              mfe: 0,
+              mae: 0,
             };
           }
         }
@@ -391,6 +450,38 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
     bucket.winRate = regimeTrades.length ? (regimeWins / regimeTrades.length) * 100 : 0;
   });
 
+  const timeframeConfiguration = configuredExecutionTimeframe || contextDataset
+    ? {
+      executionTimeframe: executionTf,
+      contextTimeframe,
+      selected: contextTimeframe ? [executionTf, contextTimeframe] : [executionTf],
+    }
+    : undefined;
+  const executionSettings = isBuilder
+    ? {
+      policy: 'conservative' as const,
+      spreadPct: builderCfg.risk.spreadPct ?? 0,
+      slippagePct: builderCfg.risk.slippagePct,
+      commissionPct: builderCfg.risk.commissionPct,
+      intrabarAssumption: 'When both stop-loss and take-profit are touched in one OHLC candle, stop-loss is assumed first because tick ordering is unavailable.',
+    }
+    : undefined;
+  const dataInfo = configuredExecutionTimeframe || contextDataset
+    ? {
+      symbol: marketDataset.symbol,
+      timezone: 'UTC' as const,
+      candleCounts: Object.fromEntries(
+        Object.entries(marketDataset.timeframes ?? {}).map(([timeframe, values]) => [timeframe, values?.length ?? 0]),
+      ),
+      datasetNames: Object.fromEntries(
+        Object.entries(marketDataset.timeframes ?? {}).map(([timeframe]) => [
+          timeframe,
+          timeframe === contextTimeframe ? contextDataset?.name ?? dataset.name : dataset.name,
+        ]),
+      ),
+    }
+    : undefined;
+
   return {
     trades,
     equityCurve,
@@ -405,5 +496,8 @@ export function runBacktest(dataset: Dataset, strategy: Strategy): BacktestResul
     strategyId: strategy.id,
     datasetId: dataset.id,
     runAt: Date.now(),
+    timeframeConfiguration,
+    executionSettings,
+    dataInfo,
   };
 }

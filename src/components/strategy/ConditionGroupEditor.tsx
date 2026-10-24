@@ -1,5 +1,5 @@
 import { Button } from '../ui/Button';
-import { PERIODLESS_INDICATORS } from '../../lib/types';
+import { PERIODLESS_INDICATORS, TIMEFRAMES } from '../../lib/types';
 import type {
   Combinator,
   ConditionGroup,
@@ -9,6 +9,7 @@ import type {
   OperandType,
   PriceField,
   RuleCondition,
+  Timeframe,
 } from '../../lib/types';
 
 const INDICATOR_KINDS: IndicatorKind[] = [
@@ -62,6 +63,15 @@ function OperandEditor({ operand, onChange }: { operand: Operand; onChange: (o: 
       {operand.type === 'indicator' && operand.indicator && (
         <>
           <select
+            value={operand.indicator.timeframe ?? ''}
+            onChange={(e) => onChange({ ...operand, indicator: { ...operand.indicator!, timeframe: (e.target.value || undefined) as Timeframe | undefined } })}
+            className={inputClass}
+            title="Indicator timeframe"
+          >
+            <option value="">Execution timeframe</option>
+            {TIMEFRAMES.map((timeframe) => <option key={timeframe} value={timeframe}>{timeframe}</option>)}
+          </select>
+          <select
             value={operand.indicator.kind}
             onChange={(e) => onChange({ ...operand, indicator: { ...operand.indicator!, kind: e.target.value as IndicatorKind } })}
             className={inputClass}
@@ -84,15 +94,24 @@ function OperandEditor({ operand, onChange }: { operand: Operand; onChange: (o: 
       )}
 
       {operand.type === 'price' && (
-        <select
-          value={operand.field}
-          onChange={(e) => onChange({ ...operand, field: e.target.value as PriceField })}
-          className={inputClass}
-        >
-          {PRICE_FIELDS.map((f) => (
-            <option key={f} value={f}>{f}</option>
-          ))}
-        </select>
+        <>
+          <select
+            value={operand.field}
+            onChange={(e) => onChange({ ...operand, field: e.target.value as PriceField })}
+            className={inputClass}
+          >
+            {PRICE_FIELDS.map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+          <select
+            value={operand.timeframe ?? ''}
+            onChange={(e) => onChange({ ...operand, timeframe: (e.target.value || undefined) as Timeframe | undefined })}
+            className={inputClass}
+            title="Price timeframe"
+          >
+            <option value="">Execution timeframe</option>
+            {TIMEFRAMES.map((timeframe) => <option key={timeframe} value={timeframe}>{timeframe}</option>)}
+          </select>
+        </>
       )}
 
       {operand.type === 'constant' && (

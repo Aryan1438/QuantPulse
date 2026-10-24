@@ -151,6 +151,56 @@ export function Report({ onNavigate }: { onNavigate: (p: Page) => void }) {
         </div>
       </Card>
 
+      {backtestResult.executionSettings && (
+        <Card className="report-section mb-4 break-inside-avoid">
+          <h3 className="mb-3 text-sm font-semibold text-text">Execution Assumptions</h3>
+          <div className="grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
+            <div><div className="text-muted">Policy</div><div className="mt-1 font-medium text-text">{backtestResult.executionSettings.policy}</div></div>
+            <div><div className="text-muted">Slippage</div><div className="mt-1 font-medium text-text">{backtestResult.executionSettings.slippagePct}%</div></div>
+            <div><div className="text-muted">Commission</div><div className="mt-1 font-medium text-text">{backtestResult.executionSettings.commissionPct}%</div></div>
+            <div><div className="text-muted">Intrabar</div><div className="mt-1 font-medium text-text">Stop first</div></div>
+          </div>
+          <p className="mt-3 text-xs text-muted">{backtestResult.executionSettings.intrabarAssumption}</p>
+        </Card>
+      )}
+
+      {backtestResult.timeframeConfiguration && (
+        <Card className="report-section mb-4 break-inside-avoid">
+          <h3 className="mb-3 text-sm font-semibold text-text">Multi-Timeframe Backtest</h3>
+          <div className="grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
+            <div><div className="text-muted">Context / Higher</div><div className="mt-1 font-medium text-text">{backtestResult.timeframeConfiguration.contextTimeframe ?? '—'}</div></div>
+            <div><div className="text-muted">Execution / Lower</div><div className="mt-1 font-medium text-text">{backtestResult.timeframeConfiguration.executionTimeframe}</div></div>
+            <div><div className="text-muted">Evaluation Resolution</div><div className="mt-1 font-medium text-text">{backtestResult.timeframeConfiguration.executionTimeframe}</div></div>
+            <div><div className="text-muted">Market State</div><div className="mt-1 font-medium text-text">One merged state</div></div>
+          </div>
+          <p className="mt-3 text-xs text-muted">The existing strategy was evaluated once on the lower-timeframe timeline using only completed higher-timeframe context.</p>
+        </Card>
+      )}
+
+      <Card className="report-section mb-4 break-inside-avoid">
+        <h3 className="mb-3 text-sm font-semibold text-text">Trade Log</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left text-xs">
+            <thead className="text-muted"><tr className="border-b border-border">
+              <th className="py-2 pr-3 font-medium">ID</th><th className="py-2 pr-3 font-medium">Signal UTC</th><th className="py-2 pr-3 font-medium">Entry UTC</th><th className="py-2 pr-3 font-medium">Exit UTC</th><th className="py-2 pr-3 font-medium">Direction</th><th className="py-2 pr-3 font-medium">Entry</th><th className="py-2 pr-3 font-medium">Exit</th><th className="py-2 pr-3 font-medium">P&amp;L</th><th className="py-2 pr-3 font-medium">Resolution</th>
+            </tr></thead>
+            <tbody>{trades.map((trade) => (
+              <tr key={trade.id} className="border-b border-border-soft">
+                <td className="mono py-2 pr-3 text-text-dim">{trade.id}</td>
+                <td className="mono py-2 pr-3 text-text-dim">{new Date((trade.signalTimestamp ?? trade.entryTime) * 1000).toISOString()}</td>
+                <td className="mono py-2 pr-3 text-text-dim">{new Date((trade.entryTimestamp ?? trade.entryTime) * 1000).toISOString()}</td>
+                <td className="mono py-2 pr-3 text-text-dim">{new Date((trade.exitTimestamp ?? trade.exitTime) * 1000).toISOString()}</td>
+                <td className="py-2 pr-3"><Badge tone={trade.side === 'long' ? 'bullish' : 'bearish'}>{trade.side}</Badge></td>
+                <td className="mono py-2 pr-3 text-text-dim">{trade.entryPrice.toFixed(2)}</td>
+                <td className="mono py-2 pr-3 text-text-dim">{trade.exitPrice.toFixed(2)}</td>
+                <td className={`mono py-2 pr-3 ${trade.pnl >= 0 ? 'text-bullish' : 'text-bearish'}`}>{trade.pnl.toFixed(2)}</td>
+                <td className="py-2 pr-3 text-text-dim">{trade.executionTimeframe ?? '—'}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </Card>
+
       {/* 7 ranked report sections */}
       <div className="space-y-4">
         <ReportSection rank={1} medal="🥇" title="Equity Curve" subtitle="Portfolio value over time — the single most important chart in any strategy report." caption={equityCurveCaption(backtestResult)}>
